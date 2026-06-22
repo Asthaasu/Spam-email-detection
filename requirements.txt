@@ -1,5 +1,5 @@
-pandas
+fastapi
+uvicorn[standard]
 numpy
+pandas
 scikit-learn
-streamlit
-shap

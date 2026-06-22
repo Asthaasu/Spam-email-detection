@@ -1,48 +1,90 @@
-import streamlit as st
+import os
+import sys
 import pickle
-from src.data_prep import preprocess
+import numpy as np
 
-# Load model
-vectorizer = pickle.load(open("model/vectorizer.pkl", "rb"))
-nb_model = pickle.load(open("model/naive_bayes.pkl", "rb"))
+from fastapi import FastAPI
+from pydantic import BaseModel
 
-# Page config
-st.set_page_config(page_title="Spam Detector", page_icon="📧")
 
-# Title
-st.title("📧 Spam Email Detector")
-st.write("Paste an email and check if it's spam")
+# Project root folder
+BASE_DIR = os.path.dirname(os.path.abspath(__file__))
 
-# Input
-email_input = st.text_area("Enter email text")
+# Allow app.py to import gmail_features.py from src/
+SRC_DIR = os.path.join(BASE_DIR, "src")
+sys.path.append(SRC_DIR)
 
-# Predict button
-if st.button("Predict"):
-    if email_input.strip() == "":
-        st.warning("Please enter email text")
-    else:
-        # Preprocess input
-        cleaned = preprocess(email_input)
-        transformed = vectorizer.transform([cleaned])
+from gmail_features import extract_email_features
 
-        st.write("### 🔍 Cleaned Text")
-        st.code(cleaned)
 
-        # Prediction
-        pred = nb_model.predict(transformed)[0]
-        prob = nb_model.predict_proba(transformed)[0]
+# Load trained model
+MODEL_PATH = os.path.join(BASE_DIR, "model", "baseline_rf.pkl")
+FEATURE_NAMES_PATH = os.path.join(
+    BASE_DIR,
+    "model",
+    "baseline_feature_names.pkl",
+)
 
-        # Output
-        st.write("## 🎯 Prediction")
+with open(MODEL_PATH, "rb") as file:
+    MODEL = pickle.load(file)
 
-        if pred == 1:
-            st.error(f"🚨 Spam Email (Confidence: {max(prob):.2f})")
-        else:
-            st.success(f"✅ Not Spam (Confidence: {max(prob):.2f})")
+with open(FEATURE_NAMES_PATH, "rb") as file:
+    FEATURE_NAMES = pickle.load(file)
 
-        # Insight
-        st.write("### 💡 How it works")
-        st.info(
-            "This model uses TF-IDF to convert text into numerical features and "
-            "Naive Bayes to classify emails based on word probabilities."
-        )
+
+app = FastAPI(
+    title="Spam Detector v2.0",
+    description="Live Gmail-trained spam detection API",
+)
+
+
+class EmailInput(BaseModel):
+    subject: str
+    sender: str
+    body: str = ""
+
+
+class PredictionOutput(BaseModel):
+    is_spam: int
+    confidence: float
+    spam_probability: float
+    message: str
+
+
+@app.get("/health")
+def health():
+    return {"status": "alive"}
+
+
+@app.post("/predict", response_model=PredictionOutput)
+def predict(email: EmailInput):
+    # Extract the same 11 features used during training
+    features = extract_email_features(
+        email.subject,
+        email.sender,
+        email.body,
+    )
+
+    # Keep exact feature order used while training
+    X = np.array(
+        [[features[name] for name in FEATURE_NAMES]]
+    )
+
+    prediction = MODEL.predict(X)[0]
+    probabilities = MODEL.predict_proba(X)[0]
+
+    spam_probability = float(probabilities[1])
+    confidence = float(probabilities[int(prediction)])
+
+    message = (
+        "LIKELY SPAM"
+        if prediction == 1
+        else "LIKELY LEGITIMATE"
+    )
+
+    return PredictionOutput(
+        is_spam=int(prediction),
+        confidence=confidence,
+        spam_probability=spam_probability,
+        message=message,
+    )
